@@ -1,0 +1,88 @@
+name: macOS 15 Apple Silicon - Meta Muse Personal Diagnostic
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_launch:
+        description: 'Attempt noninteractive application launch test'
+        required: false
+        type: boolean
+        default: true
+
+# Restrict default permissions to read-only as required
+permissions:
+  contents: read
+
+jobs:
+  audit_and_test:
+    name: Audit Runner & Test Muse Personal
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Audit Runner Environment & Hardware
+        run: |
+          mkdir -p diagnostics
+          echo "=== RUNNER HARDWARE & SYSTEM AUDIT ===" | tee diagnostics/system_audit.log
+          echo "Date: $(date -u)" | tee -a diagnostics/system_audit.log
+          echo "Hostname: $(hostname)" | tee -a diagnostics/system_audit.log
+          echo "" | tee -a diagnostics/system_audit.log
+          
+          echo "--- OS Version ---" | tee -a diagnostics/system_audit.log
+          sw_vers | tee -a diagnostics/system_audit.log
+          echo "" | tee -a diagnostics/system_audit.log
+
+          echo "--- Architecture & Kernel ---" | tee -a diagnostics/system_audit.log
+          uname -a | tee -a diagnostics/system_audit.log
+          sysctl -n machdep.cpu.brand_string | tee -a diagnostics/system_audit.log
+          echo "Logical CPUs: $(sysctl -n hw.logicalcpu)" | tee -a diagnostics/system_audit.log
+          echo "Physical CPUs: $(sysctl -n hw.physicalcpu)" | tee -a diagnostics/system_audit.log
+          echo "" | tee -a diagnostics/system_audit.log
+
+          echo "--- Memory ---" | tee -a diagnostics/system_audit.log
+          RAM_BYTES=$(sysctl -n hw.memsize)
+          RAM_GB=$((RAM_BYTES / 1024 / 1024 / 1024))
+          echo "Total RAM: ${RAM_GB} GB (${RAM_BYTES} bytes)" | tee -a diagnostics/system_audit.log
+          vm_stat | tee -a diagnostics/system_audit.log
+          echo "" | tee -a diagnostics/system_audit.log
+
+          echo "--- Disk Space ---" | tee -a diagnostics/system_audit.log
+          df -h | tee -a diagnostics/system_audit.log
+          echo "" | tee -a diagnostics/system_audit.log
+
+          echo "--- GUI & WindowServer Status ---" | tee -a diagnostics/system_audit.log
+          launchctl list | grep -i windowserver || echo "WindowServer service query returned non-zero (checking processes)"
+          ps aux | grep -i [W]indowServer || echo "No active WindowServer process in current session context"
+          echo "Current User: $(whoami)" | tee -a diagnostics/system_audit.log
+          echo "Console User: $(stat -f '%Su' /dev/console 2>/dev/null || echo 'No console user')" | tee -a diagnostics/system_audit.log
+
+      - name: Make verification script executable
+        run: chmod +x scripts/verify_and_install_muse.sh
+
+      - name: Execute Muse Verification & Diagnostics
+        run: |
+          ./scripts/verify_and_install_muse.sh "${{ inputs.test_launch }}" | tee diagnostics/muse_execution.log
+
+      - name: Capture Runner Display State (Screen Capture Test)
+        if: always()
+        run: |
+          echo "Testing if screencapture utility is functional in this runner session..."
+          # Test if display capture is available without interactive session
+          if screencapture -x -t png diagnostics/runner_screen.png 2> diagnostics/screencapture_err.log; then
+            echo "screencapture succeeded: image captured."
+            ls -l diagnostics/runner_screen.png
+          else
+            echo "screencapture failed (expected if runner lacks an active Aqua console display session):"
+            cat diagnostics/screencapture_err.log || true
+          fi
+
+      - name: Upload Diagnostic Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos15-muse-diagnostics
+          path: diagnostics/
+          retention-days: 5
